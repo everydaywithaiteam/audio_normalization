@@ -183,6 +183,45 @@ else
   bad "input on an external drive (could not create disk image)"
 fi
 
+echo; echo "Several files (batch)"
+B="$WORK/yt_shorts (batch)"; mkdir -p "$B"
+cp "$FIX/normal.mp4" "$B/v10 1 first.mp4"; cp "$FIX/normal.mp4" "$B/v10 2 second (take).mp4"; cp "$FIX/noaudio.mp4" "$B/v10 3 broken.mp4"
+YT_AUDIO_NORM_NOTIFY_LOG=/dev/null /bin/bash "$SCRIPT" "$B/v10 1 first.mp4" >/dev/null 2>&1   # already done before the batch
+n_before=$(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG" 2>/dev/null || echo 0)
+OUTPUT=$(cd "$B" && /bin/bash "$SCRIPT" *.mp4 missing.mp4 2>&1); RC=$?
+check "batch continues past failures, exit = first failure code (1)" '[ $RC = 1 ]'
+check "…processes each remaining file" '[ -f "$B/v10 2 second (take)-normalized_audio.mp4" ]'
+check "…skips its own outputs (no *-normalized_audio-normalized_audio)" '! ls "$B" | grep -q "normalized_audio-normalized_audio" && printf "%s" "$OUTPUT" | grep -q "Skipping files this tool wrote"'
+check "…already-done file is SKIP, not reprocessed" '[ ! -e "$B/v10 1 first-normalized_audio 2.mp4" ] && printf "%s" "$OUTPUT" | grep -q "SKIP.*v10 1 first.mp4"'
+check "…summary counts" 'printf "%s" "$OUTPUT" | grep -q "Batch: 4 file(s) — 1 done, 1 skipped, 2 failed"'
+check "…missing file listed as FAIL" 'printf "%s" "$OUTPUT" | grep -q "FAIL.*missing.mp4"'
+check "…per-file CHECK THIS still written" '[ -f "$B/⚠️ CHECK THIS — v10 3 broken.txt" ]'
+check "…exactly one notification, with sound" '[ $(( $(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG") - n_before )) = 1 ] && tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^❌ Audio batch: 2 of 4 failed|.*|Basso$"'
+
+OUTPUT=$(cd "$B" && /bin/bash "$SCRIPT" "v10 1 first.mp4" "v10 2 second (take).mp4" 2>&1); RC=$?
+check "batch where every file is already done → exit 4" '[ $RC = 4 ]'
+OUTPUT=$(cd "$B" && /bin/bash "$SCRIPT" *normalized_audio* 2>&1); RC=$?
+check "only outputs given → exit 1, nothing to process" '[ $RC = 1 ] && printf "%s" "$OUTPUT" | grep -q "Nothing to process"'
+
+B2="$WORK/batch ok"; mkdir -p "$B2"; cp "$FIX/normal.mp4" "$B2/a.mp4"; cp "$FIX/fcp.mov" "$B2/b.mov"
+before=$(ls -la "$B2")
+OUTPUT=$(cd "$B2" && /bin/bash "$SCRIPT" -n a.mp4 b.mov 2>&1); RC=$?
+check "batch --dry-run (options replayed to each file) writes nothing" '[ $RC = 0 ] && [ "$before" = "$(ls -la "$B2")" ] && [ $(printf "%s" "$OUTPUT" | grep -c "Dry run — nothing written") = 2 ]'
+OUTPUT=$(cd "$B2" && /bin/bash "$SCRIPT" a.mp4 b.mov 2>&1); RC=$?
+check "batch all good → exit 0, both outputs" '[ $RC = 0 ] && [ -f "$B2/a-normalized_audio.mp4" ] && [ -f "$B2/b-normalized_audio.mp4" ]'
+check "…✅ summary notification, silent" 'tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^✅ Audio normalized: 2 file(s)|.*|$"'
+
+B3="$WORK/batch interrupt"; mkdir -p "$B3"; cp "$FIX/long.mp4" "$B3/one.mp4"; cp "$FIX/long.mp4" "$B3/two.mp4"
+set -m
+( cd "$B3" && exec /bin/bash "$SCRIPT" one.mp4 two.mp4 >"$WORK/bint.out" 2>&1 ) &
+pid=$!
+set +m
+for _ in $(seq 1 600); do ls "$TMPDIR"/yt_audio_norm.*/stage1.mp4 >/dev/null 2>&1 && break; sleep 0.1; done
+sleep 0.3
+kill -INT -- -"$pid" 2>/dev/null; wait "$pid"; RC=$?
+check "Ctrl-C in a batch → exit 130, second file never started" '[ $RC = 130 ] && ! grep -q "\[2/2\]" "$WORK/bint.out"'
+check "…no temp or partial files left" 'no_temp_left && [ "$(ls "$B3" | tr "\n" " ")" = "one.mp4 two.mp4 " ]'
+
 echo; echo "Bash 3.2 compatibility"
 check "no associative arrays / mapfile / \${var^^} / negative indices" \
   '! grep -vE "^[[:space:]]*#" "$SCRIPT" | grep -nE "declare -A|mapfile|readarray|\\$\\{[a-zA-Z_]+\\^\\^|\\[-1\\]"'

@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # ── Defaults (all baked in; running bare is the intended use) ─────────────────
 TARGET_I="-14"            # integrated loudness, LUFS
@@ -47,6 +47,8 @@ INPUT_PATTERN="*final.mp4 / *final.mov"   # display only; the globs are inline b
 # ── Options ──────────────────────────────────────────────────────────────────
 DENOISE=0; MAP_ONLY=0; FORCE=0; DRY_RUN=0; KEEP_STAGE1=0; VERBOSE=0
 FILE_ARG=""
+FILES=(); NFILES=0       # every file argument (batch mode when > 1)
+OPTS=()                   # option arguments, replayed to each batch child
 
 # ── Run state ────────────────────────────────────────────────────────────────
 LOG="/dev/null"
@@ -70,9 +72,11 @@ usage() {
   cat <<EOF
 yt_audio_norm $VERSION — normalize a Final Cut Pro master's audio for YouTube
 
-Usage: yt_audio_norm [OPTIONS] [FILE]
+Usage: yt_audio_norm [OPTIONS] [FILE…]
 
 Normal use: cd to the video project folder, run yt_audio_norm. No arguments.
+Several files: yt_audio_norm *.mp4 — each is processed in turn, then one summary.
+  Files this tool wrote (*-normalized_audio*, *-stage1*) are skipped automatically.
 
 Defaults (all baked in — running bare is the intended use):
   input            ./$INPUT_DIR_NAME/$INPUT_PATTERN  (or . if already inside $INPUT_DIR_NAME/)
@@ -107,6 +111,8 @@ Options:
 Exit codes:
   0 success   1 bad usage or input   2 missing dependency   3 ffmpeg failure
   4 skipped, already normalized      5 shipped stage 1, headroom exhausted
+  Several files: the first failure code if any failed, else 5 if any shipped
+  under target, else 0 — or 4 if every file was skipped.
 
 When anything needs attention, a "⚠️ CHECK THIS — <name>.txt" file appears
 next to the input. No such file means a clean run.
@@ -133,6 +139,8 @@ mount_of() { df -P "$1" | awk 'NR == 2 { print $NF }'; }
 
 notify() { # notify <title> <message> [sound]
   log "notify: $1 — $2 ${3:+[sound: $3]}"
+  # Batch children stay quiet; the batch sends one summary notification.
+  [ "${YT_AUDIO_NORM_BATCH_CHILD:-0}" = "1" ] && return 0
   # Test hooks: record instead of showing, or suppress entirely.
   if [ -n "${YT_AUDIO_NORM_NOTIFY_LOG:-}" ]; then printf '%s|%s|%s\n' "$1" "$2" "${3:-}" >>"$YT_AUDIO_NORM_NOTIFY_LOG"; return 0; fi
   [ "${YT_AUDIO_NORM_NO_NOTIFY:-0}" = "1" ] && return 0
@@ -288,6 +296,11 @@ finish() {
   printf '%s\n' "$report"
   log "$report"
   log "EXIT $code LEVEL $LEVEL"
+  if [ -n "${YT_AUDIO_NORM_RESULT_FILE:-}" ]; then   # one line per file for the batch summary; \037 (unit separator) because tab
+    # is IFS whitespace and would collapse the empty fields of a FAIL
+    printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$code" "$LEVEL" "${F_I:-}" "${F_TP:-}" \
+      "$(basename "${INPUT:-?}")" "$(first_issue)" >>"$YT_AUDIO_NORM_RESULT_FILE" 2>/dev/null || true
+  fi
 
   # The problem-only sidecar. Its presence is the signal; a clean folder = clean run.
   if [ "$LEVEL" != "PASS" ] && [ -n "$CHECK_FILE" ] && [ "$DRY_RUN" = 0 ]; then
@@ -333,26 +346,25 @@ die_early() { printf '❌ %s\n' "$2" >&2; log "EARLY EXIT $1: $2"; exit "$1"; }
 need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die_early 1 "$1 needs a value. See --help."; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    -t|--target)  need_val "$@"; TARGET_I="$2"; shift 2 ;;
-    --target=*)   TARGET_I="${1#*=}"; shift ;;
-    -p|--peak)    need_val "$@"; PEAK_CEIL="$2"; shift 2 ;;
-    --peak=*)     PEAK_CEIL="${1#*=}"; shift ;;
-    -b|--bitrate) need_val "$@"; BITRATE="$2"; shift 2 ;;
-    --bitrate=*)  BITRATE="${1#*=}"; shift ;;
-    --denoise)    DENOISE=1; shift ;;
-    --map)        MAP_ONLY=1; shift ;;
-    -f|--force)   FORCE=1; shift ;;
-    -n|--dry-run) DRY_RUN=1; shift ;;
-    -k|--keep-stage1) KEEP_STAGE1=1; shift ;;
-    -v|--verbose) VERBOSE=1; shift ;;
+    -t|--target)  need_val "$@"; TARGET_I="$2"; OPTS+=("$1" "$2"); shift 2 ;;
+    --target=*)   TARGET_I="${1#*=}"; OPTS+=("$1"); shift ;;
+    -p|--peak)    need_val "$@"; PEAK_CEIL="$2"; OPTS+=("$1" "$2"); shift 2 ;;
+    --peak=*)     PEAK_CEIL="${1#*=}"; OPTS+=("$1"); shift ;;
+    -b|--bitrate) need_val "$@"; BITRATE="$2"; OPTS+=("$1" "$2"); shift 2 ;;
+    --bitrate=*)  BITRATE="${1#*=}"; OPTS+=("$1"); shift ;;
+    --denoise)    DENOISE=1; OPTS+=("$1"); shift ;;
+    --map)        MAP_ONLY=1; OPTS+=("$1"); shift ;;
+    -f|--force)   FORCE=1; OPTS+=("$1"); shift ;;
+    -n|--dry-run) DRY_RUN=1; OPTS+=("$1"); shift ;;
+    -k|--keep-stage1) KEEP_STAGE1=1; OPTS+=("$1"); shift ;;
+    -v|--verbose) VERBOSE=1; OPTS+=("$1"); shift ;;
     -h|--help)    usage; exit 0 ;;
-    --)           shift; [ $# -gt 0 ] && { FILE_ARG="$1"; shift; } ;;
+    --)           shift; while [ $# -gt 0 ]; do FILES+=("$1"); NFILES=$(( NFILES + 1 )); shift; done ;;
     -*)           die_early 1 "Unknown option: $1. See --help." ;;
-    *)            [ -z "$FILE_ARG" ] || die_early 1 "Only one file at a time. Got: '$FILE_ARG' and '$1'."
-                  FILE_ARG="$1"; shift ;;
+    *)            FILES+=("$1"); NFILES=$(( NFILES + 1 )); shift ;;
   esac
 done
-[ $# -eq 0 ] || die_early 1 "Unexpected arguments after the file: $*"
+[ "$NFILES" -eq 1 ] && FILE_ARG="${FILES[0]}"
 
 is_num "$TARGET_I" || die_early 1 "--target must be a number (e.g. -14), got '$TARGET_I'."
 is_num "$PEAK_CEIL" || die_early 1 "--peak must be a number (e.g. -1.0), got '$PEAK_CEIL'."
@@ -368,6 +380,83 @@ if [ -n "$missing" ]; then
   notify "❌ Audio normalization failed" "Missing:$missing" "Basso"
   exit 2
 fi
+
+# ── Several files: one child run per file, then one summary ──────────────────
+# Added 2026-10-16 for folders of Shorts (plan §7 is one file per run). Each
+# file runs as its own child process so every single-file guarantee — temp
+# cleanup, CHECK THIS sidecar, skip detection, never overwriting — holds
+# unchanged. A failure doesn't stop the batch; Ctrl-C does.
+is_own_output() {
+  case "$(basename "$1")" in
+    *-normalized_audio.*|*-normalized_audio\ [0-9]*.*|*-stage1.*|*-stage1\ [0-9]*.*|"⚠️ CHECK THIS"*) return 0 ;;
+  esac
+  return 1
+}
+
+run_batch() {
+  local results f i=0 n rc code level f_i f_tp name issue line worst_fail="" any5=0 n_done=0 n_skip=0 n_warn=0 n_fail=0
+  local queue=() skipped="" before after table="" title sound="" msg
+  for f in ${FILES[@]+"${FILES[@]}"}; do
+    if is_own_output "$f"; then skipped="${skipped}    $(basename "$f")"$'\n'; else queue+=("$f"); fi
+  done
+  n=${#queue[@]}
+  [ -n "$skipped" ] && printf 'Skipping files this tool wrote:\n%s' "$skipped"
+  [ "$n" -gt 0 ] || die_early 1 "Nothing to process — every file given was an output of this tool."
+
+  results=$(mktemp "${TMPDIR:-/tmp}/yt_audio_norm_batch.XXXXXX") || die_early 1 "Could not create a temp file."
+  trap 'rm -f "$results"' EXIT
+  trap 'trap - INT TERM HUP; printf "\nInterrupted — batch stopped. Files already finished are kept.\n" >&2; exit 130' INT TERM HUP
+
+  for f in "${queue[@]}"; do
+    i=$(( i + 1 ))
+    printf '\n▶ [%d/%d] %s\n' "$i" "$n" "$(basename "$f")"
+    before=$(wc -l <"$results")
+    rc=0
+    YT_AUDIO_NORM_BATCH_CHILD=1 YT_AUDIO_NORM_RESULT_FILE="$results" \
+      "$BASH" "$0" ${OPTS[@]+"${OPTS[@]}"} -- "$f" || rc=$?
+    [ "$rc" = 130 ] && { printf '\nInterrupted — batch stopped. Files already finished are kept.\n' >&2; exit 130; }
+    after=$(wc -l <"$results")
+    # A child that stopped before resolving its input (e.g. file not found) leaves no line.
+    [ "$after" -gt "$before" ] || printf '%s\037FAIL\037\037\037%s\037%s\n' "$rc" "$(basename "$f")" "stopped before processing — see the message above" >>"$results"
+  done
+
+  while IFS=$'\037' read -r code level f_i f_tp name issue; do
+    case "$code" in
+      4) n_skip=$(( n_skip + 1 )); line="⏭  SKIP"; issue="already normalized — nothing written (--force to redo)" ;;
+      0|5) n_done=$(( n_done + 1 ))
+           if [ "$level" = "PASS" ]; then line="✅ PASS"; else line="⚠️  WARN"; n_warn=$(( n_warn + 1 )); fi
+           [ "$code" = 5 ] && any5=1 ;;
+      *) n_fail=$(( n_fail + 1 )); line="❌ FAIL"; [ -n "$worst_fail" ] || worst_fail="$code" ;;
+    esac
+    line=$(printf '%s  %7s %-4s %6s %-4s' "$line" "$f_i" "${f_i:+LUFS}" "$f_tp" "${f_tp:+dBTP}")
+    line="  $line  $name"
+    if [ "$level" != "PASS" ] && [ -n "$issue" ]; then
+      line="$line"$'\n'"        ↳ $(printf '%s' "$issue" | awk '{ print (length($0) > 110 ? substr($0, 1, 109) "…" : $0) }')"
+    fi
+    table="${table}${line}"$'\n'
+  done <"$results"
+
+  printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+  printf 'Batch: %d file(s) — %d done, %d skipped, %d failed\n' "$n" "$n_done" "$n_skip" "$n_fail"
+  printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n%s' "$table"
+  [ $(( n_warn + n_fail )) -gt 0 ] && [ "$DRY_RUN" = 0 ] && printf '\nDetails and fixes: the "⚠️ CHECK THIS — <name>.txt" file next to each flagged video.\n'
+
+  if [ "$DRY_RUN" = 0 ] && [ "$MAP_ONLY" = 0 ]; then
+    msg="$n_done done, $n_skip skipped, $n_fail failed"
+    if [ "$n_fail" -gt 0 ]; then title="❌ Audio batch: $n_fail of $n failed"; sound="Basso"
+    elif [ "$n_warn" -gt 0 ]; then title="⚠️ Audio batch: $n_warn of $n need a look"; sound="Basso"
+    else title="✅ Audio normalized: $n file(s)"; fi
+    notify "$title" "$msg" "$sound"
+  fi
+
+  if [ -n "$worst_fail" ]; then exit "$worst_fail"
+  elif [ "$any5" = 1 ]; then exit 5
+  elif [ "$n_done" -eq 0 ]; then exit 4
+  else exit 0
+  fi
+}
+
+[ "$NFILES" -gt 1 ] && run_batch
 
 # ── Logging and temp space ───────────────────────────────────────────────────
 mkdir -p "$LOG_DIR" 2>/dev/null && LOG="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-$$.log" && : >"$LOG" || LOG="/dev/null"

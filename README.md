@@ -42,7 +42,7 @@ You also get a macOS notification: silent on PASS, with the Basso sound on WARN/
 Nothing here is needed in normal use. `yt_audio_norm --help` prints every default.
 
 ```
-yt_audio_norm [OPTIONS] [FILE]
+yt_audio_norm [OPTIONS] [FILE…]
   -t, --target LUFS    Override integrated target (default -14)
   -p, --peak DBTP      Override true peak ceiling (default -1.0)
   -b, --bitrate RATE   Override AAC bitrate (default 256k)
@@ -59,7 +59,22 @@ yt_audio_norm [OPTIONS] [FILE]
 
 Passing a `FILE` skips the `fcp_export/` lookup. The output still goes beside that file, using the same naming rule. Use this for an export with any other name, e.g. `yt_audio_norm "fcp_export/rough cut.mov"`.
 
+### Several files at once
+
+```bash
+cd ~/"Desktop/Everyday With AI/videos/video 10 - claude chat cowork merging/yt_shorts"
+yt_audio_norm *.mp4
+```
+
+Each file is processed in turn, with the same options, and its output goes beside it. At the end you get one summary table and **one** notification instead of one per file.
+
+- **Its own files are skipped.** `*.mp4` also matches outputs from earlier runs (`*-normalized_audio*`, `*-stage1*`); those are listed and skipped automatically.
+- **Already-done files are skipped.** A file that already has a tagged output shows as `⏭ SKIP`, so re-running `*.mp4` after adding new Shorts only processes the new ones.
+- **One failure doesn't stop the batch.** The rest still run. Each flagged file still gets its own `⚠️ CHECK THIS` file.
+- **Ctrl-C stops the whole batch.** Files already finished are kept. The one in progress leaves nothing behind.
+
 Exit codes: `0` success · `1` bad usage or input · `2` missing dependency · `3` ffmpeg failure · `4` skipped, already normalized · `5` shipped stage 1, headroom exhausted.
+With several files: the first failure code if any file failed, else `5` if any shipped under target, else `0`, or `4` if every file was skipped.
 
 ## What it does
 
@@ -113,7 +128,7 @@ This symlinks `~/bin/yt_audio_norm.sh` (and `~/bin/yt_audio_norm.README.md`) to 
 ## Tests
 
 ```bash
-tests/run_tests.sh       # 66 checks on synthetic masters (speech from `say`), ~2 min
+tests/run_tests.sh       # 81 checks on synthetic masters (speech from `say`), ~2 min
 tests/regression.sh      # the three real masters from the plan, ~6 min
 ```
 
