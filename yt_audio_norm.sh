@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # ── Defaults (all baked in; running bare is the intended use) ─────────────────
 TARGET_I="-14"            # integrated loudness, LUFS
@@ -23,6 +23,7 @@ WORK_LEVEL="-21"          # pre-gain lifts the source to this before the chain
 TOLERANCE="0.5"           # ± LU around target that counts as on-target
 SKIP_CORRECTION="0.3"     # |delta| below this: stage 1 is final
 MAX_DELTA="6"             # |delta| above this: something upstream is wrong
+EXPECTED_SHORTFALL="3"    # stage 1 normally lands 0.8–3 LU under when headroom runs out (plan §5)
 PREGAIN_MIN="-10"         # hard abort range
 PREGAIN_MAX="32"
 PREGAIN_OK_MIN="4"        # expected range at TX +3 / RX +3 (plan §3)
@@ -281,6 +282,7 @@ finish() {
     PASS) banner="✅ PASS" ;;
     WARN) banner="⚠️  WARN" ;;
     FAIL) banner="❌ FAIL" ;;
+    SKIP) banner="⏭  SKIPPED" ;;
   esac
   report=$(
     printf '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
@@ -303,7 +305,7 @@ finish() {
   fi
 
   # The problem-only sidecar. Its presence is the signal; a clean folder = clean run.
-  if [ "$LEVEL" != "PASS" ] && [ -n "$CHECK_FILE" ] && [ "$DRY_RUN" = 0 ]; then
+  if { [ "$LEVEL" = "WARN" ] || [ "$LEVEL" = "FAIL" ]; } && [ -n "$CHECK_FILE" ] && [ "$DRY_RUN" = 0 ]; then
     {
       printf 'yt_audio_norm — %s — %s\n' "$LEVEL" "$(date '+%Y-%m-%d %H:%M')"
       printf 'Input: %s\n' "$INPUT"
@@ -316,7 +318,8 @@ finish() {
     } >"$CHECK_FILE" 2>/dev/null || true
   fi
 
-  if [ "$DRY_RUN" = 0 ] && [ "$MAP_ONLY" = 0 ]; then
+  # A skip changed nothing and needs nothing, so it doesn't notify.
+  if [ "$DRY_RUN" = 0 ] && [ "$MAP_ONLY" = 0 ] && [ "$LEVEL" != "SKIP" ]; then
     case "$LEVEL" in
       PASS) title="✅ Audio normalized"; msg="${F_I:-?} LUFS, ${F_TP:-?} dBTP" ;;
       WARN) title="⚠️ Check audio"; sound="Basso"
@@ -537,8 +540,8 @@ if [ -n "$done_marker" ] && [ "$FORCE" = 0 ] && [ "$MAP_ONLY" = 0 ]; then
   when=$(jq -r '.date // "?"' <<<"$meta" 2>/dev/null || echo "?")
   lufs=$(jq -r '.lufs // "?"' <<<"$meta" 2>/dev/null || echo "?")
   tp=$(jq -r '.tp // "?"' <<<"$meta" 2>/dev/null || echo "?")
-  LEVEL="WARN"
-  ISSUES="• Already normalized: $(basename "$done_marker") ($lufs LUFS, $tp dBTP, made $when). Nothing written. Use --force to process again."$'\n'
+  LEVEL="SKIP"
+  note "Already normalized: $(basename "$done_marker") ($lufs LUFS, $tp dBTP, made $when). Nothing written. Use --force to process again."
   # Skipping changes nothing on disk, so leave the folder (and any earlier
   # CHECK THIS file) exactly as the last real run left it.
   CHECK_FILE=""
@@ -580,8 +583,8 @@ if [ -n "$sil" ]; then
 fi
 
 if f_le "$(f_abs "$(calc "$RAW_I - $TARGET_I")")" "$TOLERANCE" && f_le "$RAW_TP" "$PEAK_CEIL" && [ "$FORCE" = 0 ]; then
-  LEVEL="WARN"
-  ISSUES="• Already normalized: input is $RAW_I LUFS / $RAW_TP dBTP, within $TARGET_I ±$TOLERANCE. Nothing written. Use --force to process anyway."$'\n'
+  LEVEL="SKIP"
+  note "Already normalized: input is $RAW_I LUFS / $RAW_TP dBTP, within $TARGET_I ±$TOLERANCE. Nothing written. Use --force to process anyway."
   CHECK_FILE=""
   finish 4
 fi
@@ -677,7 +680,14 @@ else
   mv "$STAGE1" "$PARTIAL"
   if f_lt "$TOLERANCE" "$abs_delta"; then
     exit_code=5
-    warn_issue "Shipped $abs_delta LU under target: raising it would push peaks above $PEAK_CEIL dBTP. YouTube will play it a touch quieter than other videos — fine to upload as is."
+    # Only a flag when there's something to do (Sam, 2026-10-22). Landing
+    # 0.8–3 LU under is the normal result at TX +3 / RX +3 and fine to upload,
+    # so it stays PASS with a note; beyond that range the source is unusual.
+    if f_lt "$EXPECTED_SHORTFALL" "$abs_delta"; then
+      warn_issue "Shipped $abs_delta LU under target — more than the usual 0.8–3 LU, so the source has unusually sharp peaks. Check it with: yt_audio_norm --map, and listen for a loud spike (a clap, a bump on the mic)."
+    else
+      note "Landed $abs_delta LU under target (normal at current mic settings: raising it would push peaks past $PEAK_CEIL dBTP). Nothing to do."
+    fi
   fi
 fi
 # Still counts as partial until verified and tagged: an interrupt or failure

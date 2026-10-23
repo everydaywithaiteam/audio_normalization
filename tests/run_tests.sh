@@ -47,9 +47,11 @@ check "output tagged with xattr" 'xattr -p com.sam.yt_audio_norm "$P/fcp_export/
 check "final within -14 ±0.5" 'printf "%s" "$OUTPUT" | awk "/^  Final/ { v = \$2 } END { exit !(v >= -14.5 && v <= -13.5) }"'
 check "temp files cleaned up" 'no_temp_left'
 
+n_before=$(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG")
 run "$P"
 check "re-run skips: exit 4, previous output excluded" '[ $RC = 4 ] && [ ! -e "$P/fcp_export/one-final-normalized_audio 2.mp4" ]'
 check "skip does not write a CHECK THIS file" '[ -z "$(check_file "$P/fcp_export")" ]'
+check "skip is quiet: SKIPPED banner, no notification" 'printf "%s" "$OUTPUT" | grep -q "⏭  SKIPPED" && [ "$(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG")" = "$n_before" ]'
 
 run "$P" --force
 check "--force processes anyway" '[ $RC = 0 ]'
