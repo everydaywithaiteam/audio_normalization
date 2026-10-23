@@ -29,13 +29,15 @@ video 11 - something/          ← cd here (or into fcp_export/ itself)
 | You see | Meaning | Exit |
 |---|---|---|
 | `✅ PASS`, no CHECK THIS file | On target. Upload it. | 0 |
-| `⚠️ WARN` + CHECK THIS file | Usable, but read the file. Each line says what to do. | 0 or 5 |
+| `⚠️ WARN` + CHECK THIS file | Something needs your action. The file says what. | 0 or 5 |
 | `❌ FAIL` + CHECK THIS file | No usable output. The file says why. | 1, 3 |
-| `⚠️ WARN` "Already normalized" | Already done. Nothing written. `--force` to redo. | 4 |
+| `⏭ SKIPPED` | Already done. Nothing written, no notification. `--force` to redo. | 4 |
 
-You also get a macOS notification: silent on PASS, with the Basso sound on WARN/FAIL.
+You also get a macOS notification: silent on PASS, with the Basso sound on WARN/FAIL, and none on a skip.
 
-**The usual WARN is "Shipped 0.8 LU under target."** That's normal at current mic settings (v10 landed at -14.76). Raising it further would push peaks past -1 dBTP, so the script ships stage 1 instead of limiting after the correction. YouTube plays it a touch quieter than other videos. Upload it.
+**The rule: you're only flagged when there's something to do.** A CHECK THIS file or the Basso sound always means an action: listen for distortion, check the mic settings, or fix a part in FCP.
+
+**Landing 0.8–3 LU under target is a PASS.** That's the normal result at current mic settings (v10 -14.76, v11 -14.86). Raising it further would push peaks past -1 dBTP, so the script ships stage 1 instead of limiting after the correction. It's a note in the terminal and nothing else (exit `5`, for scripts). It's only flagged when it lands more than 3 LU under, because that points at an unusual spike in the source.
 
 ## Options
 
@@ -128,14 +130,15 @@ This symlinks `~/bin/yt_audio_norm.sh` (and `~/bin/yt_audio_norm.README.md`) to 
 ## Tests
 
 ```bash
-tests/run_tests.sh       # 81 checks on synthetic masters (speech from `say`), ~2 min
+tests/run_tests.sh       # 82 checks on synthetic masters (speech from `say`), ~2 min
 tests/regression.sh      # the three real masters from the plan, ~6 min
 ```
 
-Real-footage results (2026-10-14):
+Real-footage results (2026-10-14, video 11 and the PASS/WARN levels re-checked 2026-10-22). `regression.sh` finds the files by name anywhere under `~/Desktop/Everyday With AI` and skips any that have since been deleted.
 
 | File | Mic | Expected | Got |
 |---|---|---|---|
+| `video 11 … fcp export.mov` | +3/+3 | exit 5, PASS (no flag) | exit 5, PASS, +7.29, -14.86 / -1.38 |
 | `v10 - final.mov` | +3/+3 | exit 5, +6.96, ≈-14.8 / -1.4 | exit 5, +6.96, -14.76 / -1.45 |
 | `final fcp export.mov` | 0 dB | exit 5, ≈-15.7 / -1.4 | exit 5, +23.76, -15.67 / -1.35 |
 | `part1 w CC and transcript.mp4` | 0 dB | exit 0, +20, ≈-14.1 / -1.3 | exit 0, +20.19, -14.00 / -1.25 |
