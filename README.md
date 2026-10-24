@@ -3,6 +3,7 @@
 Normalizes the audio on a Final Cut Pro master for YouTube: **-14 LUFS integrated, ≤ -1.0 dBTP true peak**, AAC 256k / 48 kHz / stereo. The video stream is copied untouched.
 
 Pipeline: DJI Mic 2 (USB) → Screen Studio (Enhance Audio **off**) → Final Cut Pro → `yt_audio_norm` → YouTube.
+Raw OBS Studio recordings (e.g. Shorts) work too: `yt_audio_norm *.mp4` in their folder. OBS files are recognised by their tags and get OBS-specific expectations.
 Full rationale, measurements and capture settings: [youtube-audio-normalization-plan_2.md](youtube-audio-normalization-plan_2.md).
 
 ## Use
@@ -80,8 +81,8 @@ With several files: the first failure code if any file failed, else `5` if any s
 
 ## What it does
 
-1. **Measure raw** (audio only, `-vn`, ~5× faster). Skip if already within -14 ±0.5 and under the ceiling. Warn on LRA > 12 (mixed sources, prints a loudness map) and on sample peak ≥ 0 dBFS (clipped at the mic).
-2. **Pre-gain** to -21 LUFS, computed per file. At TX +3 / RX +3 expect **+5 to +12 dB**. Outside +4…+15 it warns that the mic settings drifted. Outside -10…+32 it aborts.
+1. **Measure raw** (audio only, `-vn`, ~5× faster). Skip if already within -14 ±0.5 and under the ceiling. Warn on LRA > 12 (mixed sources, prints a loudness map) — except on a raw OBS take, which is a single recording, so a wide range there is just long pauses and only gets a note and on sample peak ≥ 0 dBFS (clipped at the mic).
+2. **Pre-gain** to -21 LUFS, computed per file. At TX +3 / RX +3 expect **+5 to +12 dB** from Screen Studio/FCP, **+18 to +22 dB** from OBS (it records ~10 dB quieter). Outside +4…+15 (OBS: +15…+25) it adds a note — not a warning, since the output still lands on target. Outside -10…+32 it aborts.
 3. **Chain:** `volume → highpass 80 Hz → acompressor (-16 dB, 2:1, no makeup) → alimiter 0.7 (level=disabled) → loudnorm two-pass → stereo`.
 4. **Verify stage 1**, then apply a static `volume` correction only if `true_peak + delta ≤ ceiling`. Otherwise ship stage 1. Nothing follows the correction.
 5. **Verify final.** Tag the output with an xattr (`com.sam.yt_audio_norm`) so a re-run skips it. Report.
@@ -122,7 +123,7 @@ This symlinks `~/bin/yt_audio_norm.sh` (and `~/bin/yt_audio_norm.README.md`) to 
 | No fcp_export folder here | `cd` to the video project folder (the one containing `fcp_export/`). |
 | No `*final.mp4 / *final.mov` in fcp_export/ | Name the FCP export `<name> - final.mov`, or pass the path. |
 | More than one match | Pass the one you want: `yt_audio_norm "fcp_export/v12 - final.mov"`. |
-| Pre-gain outside +4…+15 | Check DJI TX +3 / RX +3, NR on, macOS input 50–60%, Mic Mode Standard, Screen Studio Enhance Audio off. |
+| Pre-gain note (outside +4…+15, OBS +15…+25) | Nothing to do for this file. If it keeps happening, check DJI TX +3 / RX +3, NR on, macOS input 50–60%, Mic Mode Standard, Screen Studio Enhance Audio off. |
 | Loudness swings a lot (LRA > 12) | An enhanced and a raw part were probably combined. Find the `◀ jump` in the map, fix it with clip gain in FCP, and re-export. |
 | Clipped at the mic | Listen for distortion. Lower DJI gain for future recordings. |
 | Already normalized | It's done. `--force` to redo; the new output gets a ` 2` suffix. |

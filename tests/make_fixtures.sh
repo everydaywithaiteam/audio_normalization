@@ -36,8 +36,15 @@ mkvid normal.wav normal.mp4
 mkvid quiet.wav quiet.mp4
 # Mixed sources: first half raw-ish (-40), second half "Enhance Audio" (-18)
 H=$(awk -v d="$D" 'BEGIN{print d/2}')
-ff -i speech.wav -filter_complex "[0]asplit[x][y];[x]atrim=0:$H,volume=-14dB[p];[y]atrim=$H,asetpts=PTS-STARTPTS,volume=10dB[q];[p][q]concat=n=2:v=0:a=1" -c:a pcm_s16le mixed.wav
+# (from normal.wav at -28; raw `say` output is ~-13.5, which made the mix so
+# loud it hit the pre-gain abort instead of the warning)
+ff -i normal.wav -filter_complex "[0]asplit[x][y];[x]atrim=0:$H,volume=-12dB[p];[y]atrim=$H,asetpts=PTS-STARTPTS,volume=10dB[q];[p][q]concat=n=2:v=0:a=1" -c:a pcm_s16le mixed.wav
 mkvid mixed.wav mixed.mp4
+# Raw OBS Studio takes: OBS records ~10 dB quieter than Screen Studio, and
+# a single take can have a wide LRA from long pauses (2026-10-24 Shorts).
+# ffmpeg won't keep a custom encoder tag, so mark them by OBS's handler name.
+mkvid quiet.wav obs.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
+mkvid mixed.wav obs_wide.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
 # Clipped at the mic: hard-clipped hot speech
 # Like +6/+6 gain: hot narration plus one shouted phrase that hard-clips
 # (float→s16 conversion clips anything over full scale).
