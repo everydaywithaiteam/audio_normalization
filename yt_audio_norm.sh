@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # yt_audio_norm — normalize a Final Cut Pro master's audio for YouTube.
 #
-# Pipeline: DJI Mic 2 → Screen Studio (Enhance off) → FCP → this → YouTube.
+# Pipeline: DJI Mic 2 → Screen Studio (Enhance off) → FCP → this → YouTube,
+# or DJI Mic 2 → OBS Studio → this (raw OBS recordings, e.g. Shorts).
 # Two-pass loudnorm behind a pre-gain / compressor / limiter chain, then a
 # static volume correction only if headroom allows. Video is never re-encoded.
 #
@@ -11,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # ── Defaults (all baked in; running bare is the intended use) ─────────────────
 TARGET_I="-14"            # integrated loudness, LUFS
@@ -28,6 +29,10 @@ PREGAIN_MIN="-10"         # hard abort range
 PREGAIN_MAX="32"
 PREGAIN_OK_MIN="4"        # expected range at TX +3 / RX +3 (plan §3)
 PREGAIN_OK_MAX="15"
+# OBS records the same mic ~10 dB quieter: +18.7…+21.3 across 12 Shorts on
+# 2026-10-24 at TX +3 / RX +3.
+OBS_PREGAIN_OK_MIN="15"
+OBS_PREGAIN_OK_MAX="25"
 MIXED_LRA="12"            # raw LRA above this on talking head = mixed sources
 HIGHPASS="highpass=f=80"
 # No makeup gain: with fast attack it overshot to +4.5 dBTP (plan §6 rule 4).
@@ -68,6 +73,7 @@ CH_I=""; CH_TP=""; CH_LRA=""; CH_THRESH=""
 S1_I=""; S1_TP=""; S1_LRA=""
 F_I=""; F_TP=""; F_LRA=""
 PREGAIN=""; CORRECTION_TEXT=""
+SOURCE="fcp"              # "obs" for a raw OBS Studio recording (encoder tag)
 
 usage() {
   cat <<EOF
@@ -88,7 +94,7 @@ Defaults (all baked in — running bare is the intended use):
   audio            AAC $BITRATE, $SAMPLE_RATE Hz, stereo
   video            copied, never re-encoded
   denoise          off  ($DENOISE_FILTER when on)
-  pre-gain         computed per file to reach $WORK_LEVEL LUFS; expected +$PREGAIN_OK_MIN…+$PREGAIN_OK_MAX dB
+  pre-gain         computed per file to reach $WORK_LEVEL LUFS; usual +$PREGAIN_OK_MIN…+$PREGAIN_OK_MAX dB (OBS +$OBS_PREGAIN_OK_MIN…+$OBS_PREGAIN_OK_MAX)
   chain            $HIGHPASS
                    $COMPRESSOR
                    $LIMITER
@@ -511,7 +517,7 @@ log "input: $INPUT"
 say "Input: $INPUT"
 
 # ── 2. Validate ──────────────────────────────────────────────────────────────
-probe=$(ffprobe -v error -show_entries stream=index,codec_type,codec_name:format=duration,size -of json "$INPUT" 2>>"$LOG") \
+probe=$(ffprobe -v error -show_entries stream=index,codec_type,codec_name:format=duration,size:format_tags=encoder:stream_tags=handler_name -of json "$INPUT" 2>>"$LOG") \
   || fail 1 "Can't read $(basename "$INPUT") — not a media file, or it's damaged." "Re-export from Final Cut Pro."
 n_audio=$(jq '[.streams[] | select(.codec_type == "audio")] | length' <<<"$probe")
 [ "$n_audio" -gt 0 ] || fail 1 "$(basename "$INPUT") has no audio track." "Check the FCP export settings include audio."
@@ -519,7 +525,13 @@ vcodec=$(jq -r '[.streams[] | select(.codec_type == "video")][0].codec_name // "
 dur=$(jq -r '.format.duration // "0"' <<<"$probe")
 in_size=$(jq -r '.format.size // "0"' <<<"$probe")
 DUR_US=$(awk -v d="$dur" 'BEGIN { printf "%d", d * 1000000 }')
-log "video=$vcodec duration=$dur size=$in_size audio_streams=$n_audio"
+# OBS tags its files (encoder "OBS Studio (x.y)", handler "OBS Audio Handler").
+# FCP rewrites both, so an OBS take edited in FCP counts as an FCP master.
+obs_tags=$(jq -r '[.format.tags.encoder // "", (.streams[] | select(.codec_type == "audio") | .tags.handler_name // "")] | join("|")' <<<"$probe")
+case "|$obs_tags" in
+  *"|OBS "*) SOURCE="obs"; PREGAIN_OK_MIN="$OBS_PREGAIN_OK_MIN"; PREGAIN_OK_MAX="$OBS_PREGAIN_OK_MAX" ;;
+esac
+log "video=$vcodec duration=$dur size=$in_size audio_streams=$n_audio source=$SOURCE"
 if [ "$vcodec" = "prores" ]; then
   OUT_EXT="mov"
   note "Video is ProRes, so the output is .mov (ProRes doesn't belong in .mp4). YouTube accepts it."
@@ -589,7 +601,12 @@ if f_le "$(f_abs "$(calc "$RAW_I - $TARGET_I")")" "$TOLERANCE" && f_le "$RAW_TP"
   finish 4
 fi
 
-if f_lt "$MIXED_LRA" "$RAW_LRA"; then
+# Only an edited master can mix an enhanced and a raw part. A raw OBS take is
+# one recording; a high LRA there is long pauses or a false start, and the
+# output still lands on target, so it's not worth a flag (Sam, 2026-10-24).
+if f_lt "$MIXED_LRA" "$RAW_LRA" && [ "$SOURCE" = "obs" ]; then
+  note "Loudness range is wide (raw LRA $RAW_LRA LU) — usually long pauses in a single take. Output is still on target."
+elif f_lt "$MIXED_LRA" "$RAW_LRA"; then
   warn_issue "Loudness swings a lot between parts (raw LRA $RAW_LRA LU, normal is under $MIXED_LRA). Usually an Enhance-Audio export mixed with a raw one. Look for the ◀ jump in the map below, even out that part with clip gain in FCP, and re-export."
   build_map
 fi
@@ -605,8 +622,14 @@ log "pregain: $PREGAIN"
 if f_lt "$PREGAIN" "$PREGAIN_MIN" || f_lt "$PREGAIN_MAX" "$PREGAIN"; then
   fail 1 "Needs $(signed "$PREGAIN") dB of pre-gain (allowed $PREGAIN_MIN…+$PREGAIN_MAX) — the source is far too quiet or too loud to fix safely." "Check the FCP export: muted or doubled tracks, or the wrong file."
 fi
+# A note, not a flag: the chain absorbs drift and the output still lands on
+# target (Sam, 2026-10-24). The abort range above catches a broken source.
 if f_lt "$PREGAIN" "$PREGAIN_OK_MIN" || f_lt "$PREGAIN_OK_MAX" "$PREGAIN"; then
-  warn_issue "Pre-gain was $(signed "$PREGAIN") dB (expected +$PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). The mic settings may have drifted — check DJI TX +3 / RX +3, noise reduction on, macOS input 50–60%, Screen Studio Enhance Audio off."
+  if [ "$SOURCE" = "obs" ]; then
+    note "Pre-gain was $(signed "$PREGAIN") dB (usual for OBS: +$PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). Output is fine; if it keeps happening, check DJI TX +3 / RX +3 and the OBS mic level."
+  else
+    note "Pre-gain was $(signed "$PREGAIN") dB (usual: +$PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). Output is fine; if it keeps happening, check DJI TX +3 / RX +3, noise reduction on, macOS input 50–60%, Screen Studio Enhance Audio off."
+  fi
 fi
 
 CHAIN="volume=${PREGAIN}dB,$HIGHPASS,$COMPRESSOR,$LIMITER"

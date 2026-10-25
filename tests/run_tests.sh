@@ -125,15 +125,27 @@ check "unreadable input → exit 1" '[ $RC = 1 ]'
 echo; echo "Warnings"
 P8=$(project "quiet"); cp "$FIX/quiet.mp4" "$P8/fcp_export/q-final.mp4"
 run "$P8"
-check "pre-gain drift (+20 dB) → WARN, still exit 0" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "⚠️  WARN" && printf "%s" "$OUTPUT" | grep -q "mic settings may have drifted"'
-CF=$(check_file "$P8/fcp_export")
-check "WARN run writes one CHECK THIS file with plain-English fix" '[ -n "$CF" ] && grep -q "TX +3 / RX +3" "$CF"'
-check "WARN notification has sound" 'tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^⚠️ Check audio|.*|Basso$"'
+# Drift is a note, not a flag: the output still lands on target (Sam, 2026-10-24).
+check "pre-gain drift (+20 dB) → PASS with a note, exit 0" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && printf "%s" "$OUTPUT" | grep -q "Pre-gain was +.*TX +3 / RX +3"'
+check "…no CHECK THIS file, silent notification" '[ -z "$(check_file "$P8/fcp_export")" ] && tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^✅ Audio normalized|.*|$"'
 
 P9=$(project "mixed"); cp "$FIX/mixed.mp4" "$P9/fcp_export/m-final.mp4"
 run "$P9"
-check "mixed sources → warning" 'printf "%s" "$OUTPUT" | grep -q "Loudness swings a lot"'
+check "mixed sources → warning" 'printf "%s" "$OUTPUT" | grep -q "⚠️  WARN" && printf "%s" "$OUTPUT" | grep -q "Loudness swings a lot"'
+CF=$(check_file "$P9/fcp_export")
+check "WARN run writes one CHECK THIS file with plain-English fix" '[ -n "$CF" ] && grep -q "clip gain in FCP" "$CF"'
 check "…and loudness map printed" 'printf "%s" "$OUTPUT" | grep -q "Loudness by minute"'
+check "WARN notification has sound" 'tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^⚠️ Check audio|.*|Basso$"'
+
+# Raw OBS Studio takes (2026-10-24): ~+20 dB pre-gain is normal, and a wide
+# LRA is one take with long pauses, not mixed sources.
+P9o=$(project "obs"); cp "$FIX/obs.mp4" "$P9o/take 1.mp4"
+run "$P9o" "take 1.mp4"
+check "OBS take at +20 dB pre-gain → PASS, no pre-gain note" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && ! printf "%s" "$OUTPUT" | grep -q "Pre-gain was"'
+check "…no CHECK THIS file" '[ -z "$(check_file "$P9o")" ]'
+cp "$FIX/obs_wide.mp4" "$P9o/take 2.mp4"
+run "$P9o" "take 2.mp4"
+check "OBS take with wide LRA → PASS with a note, not a warning" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && printf "%s" "$OUTPUT" | grep -q "Loudness range is wide" && ! printf "%s" "$OUTPUT" | grep -q "Loudness swings a lot"'
 run "$P9" --map
 check "--map prints map and exits 0" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "00:00"'
 
