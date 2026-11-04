@@ -13,13 +13,14 @@ cd ~/"Desktop/Everyday With AI/videos/video 11 - something"
 yt_audio_norm
 ```
 
-That's it. The script finds the FCP export in `fcp_export/` (any name ending in `final.mov` or `final.mp4`, e.g. `v12 - final.mov`), writes `<name>-normalized_audio.mp4` next to it, and tells you how it went.
+That's it. The script finds the FCP export in `fcp_export/` (any name ending in `final.mov` or `final.mp4`, e.g. `v12 - final.mov`), writes `<name>-normalized_audio.mp4` next to it, moves the original into an `originals/` subfolder, and tells you how it went.
 
 ```
 video 11 - something/          ← cd here (or into fcp_export/ itself)
 ├── screen studio/             ← ignored
 └── fcp_export/
-    ├── v11 - final.mov                    ← input (name ends in "final", .mov or .mp4)
+    ├── originals/
+    │   └── v11 - final.mov                ← input (name ends in "final", .mov or .mp4), moved here after the run
     ├── v11 - final-normalized_audio.mp4   ← output: upload this
     ├── v11 - final_SRT_English….srt       ← upload separately in YouTube Studio → Subtitles
     └── ⚠️ CHECK THIS — v11 - final.txt    ← only exists if something needs a look
@@ -60,6 +61,8 @@ yt_audio_norm [OPTIONS] [FILE…]
 
 **Input naming:** the name must end in `final` after a `-`, `_` or space, with `.mov` or `.mp4` in any case: `v12 - final.mov`, `v12-final.mp4`, `final.mov`. `semifinal.mp4` doesn't count. The plan originally said `*-final.mp4` only; it was widened on 2026-10-14 because real FCP exports are named `v10 - final.mov`.
 
+**Originals:** once an output is written (PASS or WARN), the input moves into `originals/` beside it, so the folder holds only what to upload. A failed run, a skip, `--dry-run` and `--map` leave it where it was. Re-runs still find it: a bare run with no new export checks `fcp_export/originals/`, and a file path that has moved is looked up in `originals/` next to it. Either way that's a `⏭ SKIPPED`, or with `--force` a new output beside the first (` 2` suffix). An earlier original with the same name is never overwritten (the newcomer gets ` 2`).
+
 Passing a `FILE` skips the `fcp_export/` lookup. The output still goes beside that file, using the same naming rule. Use this for an export with any other name, e.g. `yt_audio_norm "fcp_export/rough cut.mov"`.
 
 ### Several files at once
@@ -69,7 +72,7 @@ cd ~/"Desktop/Everyday With AI/videos/video 10 - claude chat cowork merging/yt_s
 yt_audio_norm *.mp4
 ```
 
-Each file is processed in turn, with the same options, and its output goes beside it. At the end you get one summary table and **one** notification instead of one per file.
+Each file is processed in turn, with the same options, and its output goes beside it; each original moves into `originals/`. At the end you get one summary table and **one** notification instead of one per file.
 
 - **Its own files are skipped.** `*.mp4` also matches outputs from earlier runs (`*-normalized_audio*`, `*-stage1*`); those are listed and skipped automatically.
 - **Already-done files are skipped.** A file that already has a tagged output shows as `⏭ SKIP`, so re-running `*.mp4` after adding new Shorts only processes the new ones.

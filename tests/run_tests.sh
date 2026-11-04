@@ -46,6 +46,8 @@ check "PASS notification is silent" 'tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep 
 check "output tagged with xattr" 'xattr -p com.sam.yt_audio_norm "$P/fcp_export/one-final-normalized_audio.mp4" | grep -q "\"status\":\"pass\""'
 check "final within -14 ±0.5" 'printf "%s" "$OUTPUT" | awk "/^  Final/ { v = \$2 } END { exit !(v >= -14.5 && v <= -13.5) }"'
 check "temp files cleaned up" 'no_temp_left'
+check "original moved into fcp_export/originals/" '[ -f "$P/fcp_export/originals/one-final.mp4" ] && [ ! -e "$P/fcp_export/one-final.mp4" ]'
+check "…other files left where they were" '[ -f "$P/fcp_export/older take.mp4" ] && [ ! -e "$P/fcp_export/originals/older take.mp4" ]'
 
 n_before=$(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG")
 run "$P"
@@ -56,6 +58,7 @@ check "skip is quiet: SKIPPED banner, no notification" 'printf "%s" "$OUTPUT" | 
 run "$P" --force
 check "--force processes anyway" '[ $RC = 0 ]'
 check "collision → \" 2\" suffix" '[ -f "$P/fcp_export/one-final-normalized_audio 2.mp4" ]'
+check "--force on a moved original: output beside the upload, original stays put" '[ "$(ls "$P/fcp_export/originals")" = "one-final.mp4" ]'
 check "existing output untouched by collision" 'xattr -p com.sam.yt_audio_norm "$P/fcp_export/one-final-normalized_audio.mp4" >/dev/null'
 
 run "$P/fcp_export" --force
@@ -77,7 +80,7 @@ check "…'semifinal.mp4' is not taken for '*final'" 'printf "%s" "$OUTPUT" | gr
 P3b=$(project "fcp naming"); cp "$FIX/fcp.mov" "$P3b/fcp_export/v12 - final.mov"
 run "$P3b"
 check "bare run picks real FCP name 'v12 - final.mov'" '[ -f "$P3b/fcp_export/v12 - final-normalized_audio.mp4" ]'
-cp "$FIX/normal.mp4" "$P3b/fcp_export/v12-final.mp4"
+cp "$FIX/normal.mp4" "$P3b/fcp_export/v12-final.mp4"; cp "$FIX/fcp.mov" "$P3b/fcp_export/v12 - final.mov"
 run "$P3b" --force
 check "'v12 - final.mov' + 'v12-final.mp4' → two matches, exit 1" '[ $RC = 1 ] && printf "%s" "$OUTPUT" | grep -q "More than one"'
 
@@ -102,7 +105,7 @@ check ".mov input → .mp4 output" '[ -f "$OUT4" ]'
 check "timecode track dropped (1 video + 1 audio only)" \
   '[ "$(ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "$OUT4" | sort | tr "\n" " ")" = "audio video " ]'
 check "video bit-identical" \
-  '[ "$(ffmpeg -nostdin -loglevel error -i "$P4/fcp_export/v10 - final (cut 2).mov" -map 0:v:0 -c copy -f md5 -)" = "$(ffmpeg -nostdin -loglevel error -i "$OUT4" -map 0:v:0 -c copy -f md5 -)" ]'
+  '[ "$(ffmpeg -nostdin -loglevel error -i "$P4/fcp_export/originals/v10 - final (cut 2).mov" -map 0:v:0 -c copy -f md5 -)" = "$(ffmpeg -nostdin -loglevel error -i "$OUT4" -map 0:v:0 -c copy -f md5 -)" ]'
 check "audio is AAC 48 kHz stereo" \
   '[ "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 "$OUT4")" = "aac,48000,2" ]'
 check "faststart (moov before mdat)" \
@@ -202,13 +205,15 @@ B="$WORK/yt_shorts (batch)"; mkdir -p "$B"
 cp "$FIX/normal.mp4" "$B/v10 1 first.mp4"; cp "$FIX/normal.mp4" "$B/v10 2 second (take).mp4"; cp "$FIX/noaudio.mp4" "$B/v10 3 broken.mp4"
 YT_AUDIO_NORM_NOTIFY_LOG=/dev/null /bin/bash "$SCRIPT" "$B/v10 1 first.mp4" >/dev/null 2>&1   # already done before the batch
 n_before=$(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG" 2>/dev/null || echo 0)
-OUTPUT=$(cd "$B" && /bin/bash "$SCRIPT" *.mp4 missing.mp4 2>&1); RC=$?
+# "v10 1 first.mp4" now lives in originals/; naming it still finds it there.
+OUTPUT=$(cd "$B" && /bin/bash "$SCRIPT" *.mp4 "v10 1 first.mp4" missing.mp4 2>&1); RC=$?
 check "batch continues past failures, exit = first failure code (1)" '[ $RC = 1 ]'
 check "…processes each remaining file" '[ -f "$B/v10 2 second (take)-normalized_audio.mp4" ]'
 check "…skips its own outputs (no *-normalized_audio-normalized_audio)" '! ls "$B" | grep -q "normalized_audio-normalized_audio" && printf "%s" "$OUTPUT" | grep -q "Skipping files this tool wrote"'
 check "…already-done file is SKIP, not reprocessed" '[ ! -e "$B/v10 1 first-normalized_audio 2.mp4" ] && printf "%s" "$OUTPUT" | grep -q "SKIP.*v10 1 first.mp4"'
 check "…summary counts" 'printf "%s" "$OUTPUT" | grep -q "Batch: 4 file(s) — 1 done, 1 skipped, 2 failed"'
 check "…missing file listed as FAIL" 'printf "%s" "$OUTPUT" | grep -q "FAIL.*missing.mp4"'
+check "…done files moved to originals/, failed one left in place" '[ -f "$B/originals/v10 1 first.mp4" ] && [ -f "$B/originals/v10 2 second (take).mp4" ] && [ -f "$B/v10 3 broken.mp4" ]'
 check "…per-file CHECK THIS still written" '[ -f "$B/⚠️ CHECK THIS — v10 3 broken.txt" ]'
 check "…exactly one notification, with sound" '[ $(( $(wc -l <"$YT_AUDIO_NORM_NOTIFY_LOG") - n_before )) = 1 ] && tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^❌ Audio batch: 2 of 4 failed|.*|Basso$"'
 

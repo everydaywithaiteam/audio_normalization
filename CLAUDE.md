@@ -6,6 +6,7 @@ Bash tool that normalizes FCP masters to -14 LUFS / -1 dBTP for YouTube. Spec: `
 - Must run under macOS `/bin/bash` 3.2: no associative arrays, `mapfile`, `${var^^}`, negative indices, or `"${arr[@]}"` on possibly-empty arrays under `set -u`. Tests run the script with `/bin/bash` explicitly.
 - Watch `set -e` traps: a function whose last command is a failing `[ … ] && …` returns non-zero and kills the script; `cmd | head` in `$(…)` can SIGPIPE under pipefail (use `awk 'NR<=n'`).
 - Input lookup: `fcp_export/` file whose name ends in `[-_ ]final.mov|mp4` (case-insensitive). Widened from the plan's `*-final.mp4` at Sam's request 2026-10-14.
+- After an output is written, the input moves to `originals/` beside it (Sam, 2026-11-03). Re-runs look there (bare lookup falls back to `fcp_export/originals/`; a missing file arg is retried as `<dir>/originals/<name>`), and an input already inside `originals/` writes its output one level up (`INDIR` vs `OUTDIR`).
 - Several file args = batch mode (`run_batch`): the script re-invokes itself once per file (`$BASH "$0" OPTS -- file`) with `YT_AUDIO_NORM_BATCH_CHILD=1` (no per-file notification) and `YT_AUDIO_NORM_RESULT_FILE` (child appends one `\037`-separated line in `finish()`). Keeps every single-file guarantee untouched — put per-file logic in the single-file path, not in `run_batch`.
 - Flag only what needs action (Sam, 2026-10-22, reaffirmed 2026-10-24: "as long as the final output is close to reqs I'm good"): WARN/FAIL (CHECK THIS file + Basso) must mean the user has something to do. Shipping 0.8–3 LU under target (`EXPECTED_SHORTFALL`) and pre-gain outside the usual range are PASS with a note; skips are `LEVEL=SKIP`, no notification.
 - Raw OBS Studio recordings (`SOURCE=obs`, detected by encoder tag `OBS Studio…` or audio handler `OBS Audio Handler`) are a second input path, run with explicit file args. OBS records ~10 dB quieter (usual pre-gain +15…+25), and the mixed-sources LRA warning is a note for them (one take can't mix sources). An OBS take re-exported from FCP loses the tags and is treated as an FCP master.
@@ -13,6 +14,6 @@ Bash tool that normalizes FCP masters to -14 LUFS / -1 dBTP for YouTube. Spec: `
 - Don't edit the script while a long run is in progress — bash reads scripts lazily and the run dies with a bogus syntax error.
 
 ## Tests
-- `tests/run_tests.sh` — 86 checks on synthetic fixtures (`tests/make_fixtures.sh`, speech from `say`). Fixtures cache in `$FIXTURES` (default `$TMPDIR/yt_audio_norm_fixtures`).
+- `tests/run_tests.sh` — 90 checks on synthetic fixtures (`tests/make_fixtures.sh`, speech from `say`). Fixtures cache in `$FIXTURES` (default `$TMPDIR/yt_audio_norm_fixtures`).
 - `tests/regression.sh` — real masters found by filename anywhere under `~/Desktop/Everyday With AI` (missing ones are skipped), symlinked into a temp dir so nothing is written beside the originals. v10 is the primary case.
 - Test hooks: `YT_AUDIO_NORM_NOTIFY_LOG=<file>` records notifications instead of showing them; `YT_AUDIO_NORM_NO_NOTIFY=1` suppresses; `YT_AUDIO_NORM_FREE_KB=<n>` fakes free disk space.

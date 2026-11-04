@@ -48,7 +48,10 @@ INPUT_DIR_NAME="fcp_export"
 # Name ends in "final" after -, _ or space, .mp4 or .mov, any case:
 # "v12-final.mp4", "v10 - final.mov", "final.mp4". Plan §7.2 said *-final.mp4
 # only; widened 2026-10-14 because real FCP exports are named "v10 - final.mov".
-INPUT_PATTERN="*final.mp4 / *final.mov"   # display only; the globs are inline below
+INPUT_PATTERN="*final.mp4 / *final.mov"   # display only; the globs are in scan_finals
+# After a run writes an output, the input moves here (a subfolder beside it) so
+# the folder holds only what to upload (Sam, 2026-11-03).
+ORIG_DIR_NAME="originals"
 
 # ── Options ──────────────────────────────────────────────────────────────────
 DENOISE=0; MAP_ONLY=0; FORCE=0; DRY_RUN=0; KEEP_STAGE1=0; VERBOSE=0
@@ -60,7 +63,7 @@ OPTS=()                   # option arguments, replayed to each batch child
 LOG="/dev/null"
 TMP=""
 PARTIAL=""                # final output being written; removed if we die
-INPUT=""; OUTDIR=""; BASE=""; OUT_EXT="mp4"; OUT=""
+INPUT=""; INDIR=""; OUTDIR=""; BASE=""; OUT_EXT="mp4"; OUT=""
 CHECK_FILE=""
 DUR_US=0
 ISSUES=""                 # one "• problem — fix" per line
@@ -89,6 +92,8 @@ Defaults (all baked in — running bare is the intended use):
   input            ./$INPUT_DIR_NAME/$INPUT_PATTERN  (or . if already inside $INPUT_DIR_NAME/)
   output           <input>-normalized_audio.mp4, same folder (.mov for ProRes)
                    never overwrites: adds " 2", " 3"… on collision
+  original         moved into $ORIG_DIR_NAME/ beside it once the output is written;
+                   re-runs find it there (a skip, or --force to redo)
   target           $TARGET_I LUFS  (±$TOLERANCE)
   peak ceiling     $PEAK_CEIL dBTP
   audio            AAC $BITRATE, $SAMPLE_RATE Hz, stereo
@@ -477,7 +482,24 @@ trap cleanup EXIT
 trap on_interrupt INT TERM HUP
 
 # ── 1. Resolve input (plan §7.2a) ────────────────────────────────────────────
+# scan_finals <dir> → MATCHES (display list), COUNT, PICK (last match)
+scan_finals() {
+  local f
+  MATCHES=""; COUNT=0; PICK=""
+  shopt -s nocaseglob
+  for f in "$1"/*[-_\ ]final.mp4 "$1"/*[-_\ ]final.mov "$1"/final.mp4 "$1"/final.mov; do
+    [ -f "$f" ] || continue
+    case "$f" in *-normalized_audio.mp4|*-stage1.*) continue ;; esac
+    MATCHES="${MATCHES}    $(basename "$f")"$'\n'; COUNT=$(( COUNT + 1 )); PICK="$f"
+  done
+  shopt -u nocaseglob
+  return 0
+}
 if [ -n "$FILE_ARG" ]; then
+  # Already moved aside by an earlier run: use it from originals/ (re-run → skip).
+  if [ ! -e "$FILE_ARG" ] && [ -f "$(dirname "$FILE_ARG")/$ORIG_DIR_NAME/$(basename "$FILE_ARG")" ]; then
+    FILE_ARG="$(dirname "$FILE_ARG")/$ORIG_DIR_NAME/$(basename "$FILE_ARG")"
+  fi
   [ -e "$FILE_ARG" ] || die_early 1 "File not found: $FILE_ARG"
   [ -f "$FILE_ARG" ] && [ -r "$FILE_ARG" ] || die_early 1 "Not a readable file: $FILE_ARG"
   pick="$FILE_ARG"
@@ -486,15 +508,14 @@ else
   elif [ "$(basename "$PWD")" = "$INPUT_DIR_NAME" ]; then dir="."
   else die_early 1 "No $INPUT_DIR_NAME folder here. cd to the video project folder and try again."
   fi
-  shopt -s nocaseglob
-  matches=""; count=0
-  for f in "$dir"/*[-_\ ]final.mp4 "$dir"/*[-_\ ]final.mov "$dir"/final.mp4 "$dir"/final.mov; do
-    [ -f "$f" ] || continue
-    case "$f" in *-normalized_audio.mp4|*-stage1.*) continue ;; esac
-    matches="${matches}    $(basename "$f")"$'\n'; count=$(( count + 1 )); pick="$f"
-  done
+  scan_finals "$dir"
+  # Nothing new here, but an earlier run moved one aside: re-check that one
+  # (normally a skip; --force redoes it).
+  [ "$COUNT" -eq 0 ] && [ -d "$dir/$ORIG_DIR_NAME" ] && scan_finals "$dir/$ORIG_DIR_NAME"
+  matches="$MATCHES"; count="$COUNT"; pick="$PICK"
   if [ "$count" -eq 0 ]; then
     found=""
+    shopt -s nocaseglob
     for f in "$dir"/*.mp4 "$dir"/*.mov "$dir"/*.m4v; do
       [ -f "$f" ] && found="${found}    $(basename "$f")"$'\n'
     done
@@ -503,14 +524,16 @@ else
     die_early 1 "No $INPUT_PATTERN in $INPUT_DIR_NAME/. Found:
 $found   Name the FCP export '<name> - final.mov' or '<name>-final.mp4', or pass the file path."
   fi
-  shopt -u nocaseglob
   if [ "$count" -gt 1 ]; then
     die_early 1 "More than one $INPUT_PATTERN in $INPUT_DIR_NAME/ — not guessing:
 ${matches}   Run again with the path of the one you want: yt_audio_norm \"$INPUT_DIR_NAME/<file>\""
   fi
 fi
-OUTDIR=$(cd "$(dirname "$pick")" && pwd)
-INPUT="$OUTDIR/$(basename "$pick")"
+INDIR=$(cd "$(dirname "$pick")" && pwd)
+INPUT="$INDIR/$(basename "$pick")"
+# An input already in originals/ writes (and looks for) its output one level up.
+OUTDIR="$INDIR"
+[ "$(basename "$INDIR")" = "$ORIG_DIR_NAME" ] && OUTDIR=$(dirname "$INDIR")
 BASE=$(basename "$INPUT"); BASE="${BASE%.*}"
 CHECK_FILE="$OUTDIR/⚠️ CHECK THIS — $BASE.txt"
 log "input: $INPUT"
@@ -734,6 +757,19 @@ marker=$(jq -cn --arg date "$(date '+%Y-%m-%dT%H:%M:%S')" --arg src "$(basename 
   '{date: $date, source: $src, lufs: $lufs, tp: $tp, status: $status}')
 xattr -w "$XATTR_KEY" "$marker" "$OUT" 2>>"$LOG" || note "Couldn't tag the output (drive may not support it); a re-run won't auto-skip it."
 PARTIAL=""
+
+# ── 11b. Move the original aside ─────────────────────────────────────────────
+# Leaves the folder with only the upload; never overwrites an earlier original.
+if [ "$INDIR" = "$OUTDIR" ]; then
+  orig_name=$(basename "$INPUT")
+  dest=$(mkdir -p "$OUTDIR/$ORIG_DIR_NAME" 2>>"$LOG" && free_path "$OUTDIR/$ORIG_DIR_NAME/${orig_name%.*}" "${orig_name##*.}") || dest=""
+  if [ -n "$dest" ] && mv -n "$INPUT" "$dest" 2>>"$LOG" && [ -f "$dest" ]; then
+    log "moved original: $dest"
+    INPUT="$dest"
+  else
+    note "Couldn't move the original into $ORIG_DIR_NAME/; it's still beside the output."
+  fi
+fi
 
 # ── 12. Captions ─────────────────────────────────────────────────────────────
 shopt -s nocaseglob
