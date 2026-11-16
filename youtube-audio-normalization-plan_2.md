@@ -2,7 +2,7 @@
 
 **Pipeline:** DJI Mic 2 (USB) → Screen Studio (Enhance Audio **off**) → Final Cut Pro → `yt_audio_norm` → YouTube
 **Status:** validated end to end on `v10 - final.mov` (8:23, 4K60) at current mic settings
-**Last updated:** 2026-10-14
+**Last updated:** 2026-11-16 (Shure MV7+ replaces the DJI Mic 2; see §3 "Shure MV7+")
 
 ---
 
@@ -119,6 +119,23 @@ A controlled pair like this showed a clean +14.2 LU gated / +8.9 dB RMS response
 At 0 dB mic gain the same kind of file needed +20 to +24, so the mic change moved the source nearly 17 dB. Lower pre-gain is the point: less post gain means less amplified noise and better preserved dynamics (video 10 held LRA 3.7 vs video 9's 3.1).
 
 The script computes pre-gain per file, so this is a sanity-check range, not a constant. A value back above +15 means the mic settings drifted.
+
+### Shure MV7+ (from 2026-11-16)
+
+The DJI Mic 2 is retired. First MV7+ session: 7 raw OBS Shorts (`v14 1…7 - Short_2026-11-16`), measured by the script:
+
+| Measure | Value | Reading |
+|---|---|---|
+| Raw loudness | -22.27 to -22.72 LUFS | Very consistent take to take |
+| Pre-gain | **+1.27 to +1.72 dB** | vs +18.7…+21.3 for the DJI through OBS |
+| Raw true peak | -4.9 to -2.7 dBTP (one take +0.35) | Headroom present |
+| Pause floor | about -63 dBFS RMS | Quiet room tone, not gated to silence like DJI NR; no `--denoise` needed |
+| Channels | Identical L/R | Mono mic, dual-mono file |
+| Final | -14.55 LUFS / -1.39 dBTP (take 1) | PASS, correction skipped for headroom as usual |
+
+The OBS expected range is now **-3…+6 dB**. FCP masters made from MV7+ footage haven't been measured yet; their range (+4…+15) is still the DJI one.
+
+Take 2's +0.35 dBTP was one transient at 0:03.7 (≈5 dB above every word in the take): one decoded sample over full scale, 2 within 1 dB of it. The real-clipping fixture has 12,404. So "clipped at the mic" now needs ≥ 100 samples within 1 dB of full scale (`volumedetect` `histogram_0db`, run only when the peak reaches 0); fewer is a note.
 
 ### Corrections to earlier versions of this plan
 
@@ -400,7 +417,7 @@ Options:
 3. **Measure raw** with `-vn`.
    - Within ±0.5 LU of target and peak ≤ ceiling → exit `4` unless `--force`
    - `input_lra` > 12 → warn about mixed sources and print the loudness map
-   - Raw peak ≥ 0 dBFS → warn that the recording clipped at the mic and to lower DJI gain. Don't abort.
+   - Raw peak ≥ 0 dBFS and ≥ 100 samples within 1 dB of full scale → warn that the recording clipped at the mic and to lower the mic gain. Fewer samples → a note (one spike, the limiter caught it). Don't abort.
 4. **Pre-gain** — `-21 - raw_i`. Outside -10…+32 dB → abort. Expected range at current mic settings is +5 to +12 (§3).
 5. **Measure chain** with `-vn`. Warn if `input_tp ≥ 0`.
 6. **Encode stage 1** with explicit `-map 0:v:0 -map 0:a:0`, into the temp dir.

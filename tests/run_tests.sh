@@ -16,7 +16,7 @@ export YT_AUDIO_NORM_NOTIFY_LOG="$WORK/notifications.txt"
 export TMPDIR="$WORK/tmp"; mkdir -p "$TMPDIR"   # so stray temp files are visible
 PASSED=0; FAILED=0; FAILS=""
 
-[ -f "$FIX/long.mp4" ] || "$HERE/make_fixtures.sh" "$FIX" >/dev/null
+[ -f "$FIX/long.mp4" ] && [ -f "$FIX/obs_spike.mp4" ] || "$HERE/make_fixtures.sh" "$FIX" >/dev/null
 
 ok()   { PASSED=$(( PASSED + 1 )); printf '  ✓ %s\n' "$1"; }
 bad()  { FAILED=$(( FAILED + 1 )); FAILS="$FAILS  ✗ $1"$'\n'; printf '  ✗ %s\n' "$1"; }
@@ -140,12 +140,19 @@ check "WARN run writes one CHECK THIS file with plain-English fix" '[ -n "$CF" ]
 check "…and loudness map printed" 'printf "%s" "$OUTPUT" | grep -q "Loudness by minute"'
 check "WARN notification has sound" 'tail -1 "$YT_AUDIO_NORM_NOTIFY_LOG" | grep -q "^⚠️ Check audio|.*|Basso$"'
 
-# Raw OBS Studio takes (2026-10-24): ~+20 dB pre-gain is normal, and a wide
-# LRA is one take with long pauses, not mixed sources.
-P9o=$(project "obs"); cp "$FIX/obs.mp4" "$P9o/take 1.mp4"
+# Raw OBS Studio takes. Shure MV7+ (2026-11-16): ~+1.4 dB pre-gain is normal;
+# the old DJI level (+20) is now drift, a note. A wide LRA is one take with
+# long pauses, not mixed sources.
+P9o=$(project "obs"); cp "$FIX/obs_mv7.mp4" "$P9o/take 1.mp4"
 run "$P9o" "take 1.mp4"
-check "OBS take at +20 dB pre-gain → PASS, no pre-gain note" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && ! printf "%s" "$OUTPUT" | grep -q "Pre-gain was"'
+check "OBS MV7+ take at ~+1.4 dB pre-gain → PASS, no pre-gain note" '{ [ $RC = 0 ] || [ $RC = 5 ]; } && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && ! printf "%s" "$OUTPUT" | grep -q "Pre-gain was"'
 check "…no CHECK THIS file" '[ -z "$(check_file "$P9o")" ]'
+cp "$FIX/obs.mp4" "$P9o/take 3.mp4"
+run "$P9o" "take 3.mp4"
+check "OBS take at old DJI level (+20) → PASS with MV7+ note" 'printf "%s" "$OUTPUT" | grep -q "✅ PASS" && printf "%s" "$OUTPUT" | grep -q "Pre-gain was +.*MV7+ gain in MOTIV Mix"'
+cp "$FIX/obs_spike.mp4" "$P9o/take 4.mp4"
+run "$P9o" "take 4.mp4"
+check "one spike to full scale → PASS with a note, not 'clipped'" 'printf "%s" "$OUTPUT" | grep -q "✅ PASS" && printf "%s" "$OUTPUT" | grep -q "One brief spike touched full scale" && ! printf "%s" "$OUTPUT" | grep -q "clipped at the mic"'
 cp "$FIX/obs_wide.mp4" "$P9o/take 2.mp4"
 run "$P9o" "take 2.mp4"
 check "OBS take with wide LRA → PASS with a note, not a warning" '[ $RC = 0 ] && printf "%s" "$OUTPUT" | grep -q "✅ PASS" && printf "%s" "$OUTPUT" | grep -q "Loudness range is wide" && ! printf "%s" "$OUTPUT" | grep -q "Loudness swings a lot"'
