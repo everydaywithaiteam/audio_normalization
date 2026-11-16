@@ -40,11 +40,20 @@ H=$(awk -v d="$D" 'BEGIN{print d/2}')
 # loud it hit the pre-gain abort instead of the warning)
 ff -i normal.wav -filter_complex "[0]asplit[x][y];[x]atrim=0:$H,volume=-12dB[p];[y]atrim=$H,asetpts=PTS-STARTPTS,volume=10dB[q];[p][q]concat=n=2:v=0:a=1" -c:a pcm_s16le mixed.wav
 mkvid mixed.wav mixed.mp4
-# Raw OBS Studio takes: OBS records ~10 dB quieter than Screen Studio, and
-# a single take can have a wide LRA from long pauses (2026-10-24 Shorts).
-# ffmpeg won't keep a custom encoder tag, so mark them by OBS's handler name.
+# Raw OBS Studio takes. A single take can have a wide LRA from long pauses
+# (2026-10-24 Shorts). ffmpeg won't keep a custom encoder tag, so mark them by
+# OBS's handler name. obs_mv7: Shure MV7+ level, ~-22.4 LUFS → pre-gain ≈ +1.4
+# (2026-11-16 Shorts). obs.mp4: the old DJI-through-OBS level, pre-gain ≈ +20.
+level speech.wav -22.4 mv7.wav
+mkvid mv7.wav obs_mv7.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
 mkvid quiet.wav obs.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
 mkvid mixed.wav obs_wide.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
+# One brief spike to full scale in an MV7+ take (a tap or pop): 3 samples at
+# 1.0 on top of the speech. Peak ≥ 0 dBFS but nowhere near clipping.
+ff -i mv7.wav -f lavfi -i "aevalsrc='if(between(n,48000,48002),1,0)':s=48000:c=stereo:d=$D" \
+   -filter_complex "amix=inputs=2:normalize=0:duration=first" -c:a pcm_f32le spike.wav
+mkvid spike.wav obs_spike.mp4 -metadata:s:a:0 handler_name="OBS Audio Handler"
+rm -f spike.wav
 # Clipped at the mic: hard-clipped hot speech
 # Like +6/+6 gain: hot narration plus one shouted phrase that hard-clips
 # (float→s16 conversion clips anything over full scale).

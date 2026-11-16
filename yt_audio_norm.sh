@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # yt_audio_norm — normalize a Final Cut Pro master's audio for YouTube.
 #
-# Pipeline: DJI Mic 2 → Screen Studio (Enhance off) → FCP → this → YouTube,
-# or DJI Mic 2 → OBS Studio → this (raw OBS recordings, e.g. Shorts).
+# Pipeline: Shure MV7+ (USB) → OBS Studio → this (raw OBS recordings, e.g.
+# Shorts), or an FCP master → this → YouTube. The FCP-path ranges below were
+# measured with the DJI Mic 2 used until 2026-11-16.
 # Two-pass loudnorm behind a pre-gain / compressor / limiter chain, then a
 # static volume correction only if headroom allows. Video is never re-encoded.
 #
@@ -12,7 +13,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # ── Defaults (all baked in; running bare is the intended use) ─────────────────
 TARGET_I="-14"            # integrated loudness, LUFS
@@ -27,12 +28,16 @@ MAX_DELTA="6"             # |delta| above this: something upstream is wrong
 EXPECTED_SHORTFALL="3"    # stage 1 normally lands 0.8–3 LU under when headroom runs out (plan §5)
 PREGAIN_MIN="-10"         # hard abort range
 PREGAIN_MAX="32"
-PREGAIN_OK_MIN="4"        # expected range at TX +3 / RX +3 (plan §3)
+PREGAIN_OK_MIN="4"        # expected range for FCP masters, DJI at TX +3 / RX +3 (plan §3)
 PREGAIN_OK_MAX="15"
-# OBS records the same mic ~10 dB quieter: +18.7…+21.3 across 12 Shorts on
-# 2026-10-24 at TX +3 / RX +3.
-OBS_PREGAIN_OK_MIN="15"
-OBS_PREGAIN_OK_MAX="25"
+# Shure MV7+ into OBS: +1.27…+1.72 across 7 Shorts on 2026-11-16 (raw
+# -22.3…-22.7 LUFS). The DJI into OBS needed +18.7…+21.3 (2026-10-24).
+OBS_PREGAIN_OK_MIN="-3"
+OBS_PREGAIN_OK_MAX="6"
+# Real clipping leaves hundreds of decoded samples within 1 dB of full scale
+# (test fixture: 12,404); one transient overshooting by a hair leaves a few
+# (MV7+ v14 Short 2: 2). Below this count a ≥ 0 dBFS peak is a note.
+CLIP_MIN_SAMPLES="100"
 MIXED_LRA="12"            # raw LRA above this on talking head = mixed sources
 HIGHPASS="highpass=f=80"
 # No makeup gain: with fast attack it overshot to +4.5 dBTP (plan §6 rule 4).
@@ -94,7 +99,7 @@ Defaults (all baked in — running bare is the intended use):
   audio            AAC $BITRATE, $SAMPLE_RATE Hz, stereo
   video            copied, never re-encoded
   denoise          off  ($DENOISE_FILTER when on)
-  pre-gain         computed per file to reach $WORK_LEVEL LUFS; usual +$PREGAIN_OK_MIN…+$PREGAIN_OK_MAX dB (OBS +$OBS_PREGAIN_OK_MIN…+$OBS_PREGAIN_OK_MAX)
+  pre-gain         computed per file to reach $WORK_LEVEL LUFS; usual +$PREGAIN_OK_MIN…+$PREGAIN_OK_MAX dB (MV7+ via OBS: $OBS_PREGAIN_OK_MIN…+$OBS_PREGAIN_OK_MAX)
   chain            $HIGHPASS
                    $COMPRESSOR
                    $LIMITER
@@ -612,7 +617,17 @@ elif f_lt "$MIXED_LRA" "$RAW_LRA"; then
 fi
 
 if [ -n "$RAW_PEAK" ] && is_num "$RAW_PEAK" && f_le 0 "$RAW_PEAK"; then
-  warn_issue "The recording clipped at the mic (peak $RAW_PEAK dBFS). It was still processed — listen for distortion on loud words. For next time, lower DJI TX/RX gain."
+  # Only reached when the peak touches full scale, so the extra pass is rare.
+  # Separate from the loudness pass: volumedetect converts to s16 and would
+  # change what loudnorm sees.
+  hot=$(ffmpeg -hide_banner -nostdin -i "$INPUT" -vn -map 0:a:0 -af volumedetect -f null /dev/null 2>&1 \
+        | awk -F'histogram_0db: ' 'NF > 1 { v = $2 } END { print v + 0 }')
+  log "samples within 1 dB of full scale: $hot"
+  if [ "$hot" -ge "$CLIP_MIN_SAMPLES" ]; then
+    warn_issue "The recording clipped at the mic (peak $RAW_PEAK dBFS, $hot samples at full scale). It was still processed — listen for distortion on loud words. For next time, lower the mic gain."
+  else
+    note "One brief spike touched full scale (peak $RAW_PEAK dBFS, $hot samples) — a tap or pop, not clipping. The limiter caught it."
+  fi
 fi
 
 # ── 4. Pre-gain ──────────────────────────────────────────────────────────────
@@ -626,7 +641,7 @@ fi
 # target (Sam, 2026-10-24). The abort range above catches a broken source.
 if f_lt "$PREGAIN" "$PREGAIN_OK_MIN" || f_lt "$PREGAIN_OK_MAX" "$PREGAIN"; then
   if [ "$SOURCE" = "obs" ]; then
-    note "Pre-gain was $(signed "$PREGAIN") dB (usual for OBS: +$PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). Output is fine; if it keeps happening, check DJI TX +3 / RX +3 and the OBS mic level."
+    note "Pre-gain was $(signed "$PREGAIN") dB (usual for OBS with the MV7+: $PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). Output is fine; if it keeps happening, check the MV7+ gain in MOTIV Mix hasn't changed and the OBS mic level."
   else
     note "Pre-gain was $(signed "$PREGAIN") dB (usual: +$PREGAIN_OK_MIN to +$PREGAIN_OK_MAX). Output is fine; if it keeps happening, check DJI TX +3 / RX +3, noise reduction on, macOS input 50–60%, Screen Studio Enhance Audio off."
   fi
